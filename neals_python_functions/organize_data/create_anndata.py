@@ -13,14 +13,11 @@ def anndata_from_mtx_files(matrix_csv, meta_csv) :
 	meta_data = pd.read_csv(meta_csv, index_col = 0)
 
 	# Make sure all samples in sample info are in metadata
-	print(sample_info.index)
-	print(meta_data.index)
-
 	try :
 		all(meta_data.index == sample_info.index)
 	except :
 		raise ValueError("matrix csv and metadata csv do not have same samples in them!")
-		
+
 	mtx_list = []
 	barcode_dict = {}
 	feature_dict = {}
@@ -67,6 +64,5 @@ def anndata_from_mtx_files(matrix_csv, meta_csv) :
 	# Make the genes unique
 	adata.var_names_make_unique()
 
-	# print(adata.var)
 	return(adata)
 
