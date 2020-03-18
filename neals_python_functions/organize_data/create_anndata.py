@@ -56,6 +56,9 @@ def anndata_from_mtx_files(matrix_csv, meta_csv) :
 
 	# Get the matrices together, transpose for proper shape
 	final_mtx = sparse.hstack(mtx_list).T
+	# Make it in a format that Pegasus likes
+	final_mtx = sparse.csc_matrix(final_mtx)
+
 	final_obs = pd.concat(barcode_dict.values())
 	final_var = feature_dict[samp]
 
