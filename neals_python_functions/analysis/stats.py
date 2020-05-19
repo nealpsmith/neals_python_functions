@@ -34,3 +34,38 @@ def rand_index_plot(adata, rep = "pca", resamp_perc = 0.9, resolutions  = [0.3, 
 		rand_indx_dict[str(resolution)] = rand_list
 		print("Finished {res}".format(res = resolution))
 	return(rand_indx_dict)
+
+def myeloid_scores(data) :
+	from . import gene_sets
+	sets = {"DC1_score" : gene_sets.dc1_genes,
+	"DC2_score" : gene_sets.dc2_genes,
+	"DC3_score" : gene_sets.dc3_genes,
+	"DC4_score" : gene_sets.dc4_genes,
+	"DC5_score" : gene_sets.dc5_genes,
+	"pDC_score" : gene_sets.pdc_genes,
+	"mono1_score" : gene_sets.mono1_genes,
+	"mono2_score" : gene_sets.mono2_genes,
+	"mono3_score" : gene_sets.mono3_genes,
+	"mono4_score" : gene_sets.mono4_genes}
+
+	for key, val in sets.items() :
+		data.obs[key] = _score_cells(data, val)
+
+def _score_cells(data, gene_set) :
+    # Get rid of genes that aren't in data
+    gene_set = [gene for gene in gene_set if gene in data.var_names]
+    print(gene_set)
+    # Limit the data to just those genes
+    dat = data[:,gene_set].X
+    dat = dat.toarray()
+    mean = dat.mean(axis=0)
+    var = dat.var(axis=0)
+    std = np.sqrt(var)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dat = (dat - mean) / std
+    dat[dat < -5] = -5
+    dat[dat > 5] = 5
+
+    scores = dat.mean(axis = 1)
+    return(scores)

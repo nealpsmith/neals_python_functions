@@ -1,4 +1,6 @@
 from . import (
 	plots,
-	stats
+	stats,
+	gene_sets,
+	cellbrowser
 	)

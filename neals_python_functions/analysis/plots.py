@@ -44,3 +44,11 @@ def basic_marker_plots(adata, save_folder = ".", save_name = "") :
 	sc.pl.umap(adata, color = Cytokine_receptor, save = "_{save_name}_cytokine_receptor.png".format(save_name = save_name))
 	sc.pl.umap(adata, color = Chemokine, save = "_{save_name}_chemokine.png".format(save_name = save_name))
 	sc.pl.umap(adata, color = Inflammasome, save = "_{save_name}_inflammasome.png".format(save_name = save_name))
+
+
+def myeloid_score_plots(adata, save_name = "", save_folder = ".") :
+	sc.settings.figdir = save_folder
+	cell_types = ["DC1_score","DC2_score", "DC3_score", "DC4_score", "DC5_score","pDC_score", "mono1_score" , "mono2_score" , "mono3_score" , "mono4_score"]
+
+	sc.pl.umap(adata, color = cell_types, save = "_{save_name}_myeloid_scores.png".format(save_name = save_name))
+	
