@@ -7,6 +7,7 @@ def _make_cell_browser_files(
 	which_meta = "all",
 	cluster_column = "leiden_labels",
 	embedding = "umap", 
+	var_info = "de_res",
 	which_vars = ["auroc", "mean_logExpr", "mean_logExpr_other", "log_fold_change", "percentage", "percentage_other"],
 	de_selection_var = "auroc",
 	de_selection_cutoff = 0.5) :
@@ -47,7 +48,7 @@ def _make_cell_browser_files(
 		df_dict = {}
 
 		for var in which_vars :
-			df_dict[var] = adata.varm["de_res"]["{var}:{clust}".format(var = var, clust = clust)]
+			df_dict[var] = adata.varm[var_info]["{var}:{clust}".format(var = var, clust = clust)]
 
 		df = pd.DataFrame(df_dict)
 		df["gene"] = adata.var_names
@@ -146,11 +147,20 @@ def _make_conf(
 
 def _make_browser(data_filepath, browser_filepath, run = True) :
 	import subprocess
-	# subprocess.call(["cd", data_filepath])
+	import sys
+
+	# Need to add path environment variable for subprocess to work
+	path = os.environ["PATH"]
+
+	# make sure conda path is included
+	conda_path = "/".join([sys.prefix, "bin"])
+	path = ":".join([path, conda_path])
+
 	print('Running cbBuild')
 	completed_process = subprocess.run(["cbBuild", "-o", browser_filepath], cwd=data_filepath,
 									   stdout=subprocess.PIPE,
-									   stderr=subprocess.STDOUT)
+									   stderr=subprocess.STDOUT,
+									   env={"PATH": path})
 	print(completed_process.stdout.decode())
 	completed_process.check_returncode()
 
@@ -160,7 +170,9 @@ def _make_browser(data_filepath, browser_filepath, run = True) :
 	if run :
 		# Re-run it
 		completed_process = subprocess.run(["cbBuild", "-o", browser_filepath, "-p", "1234"], cwd = data_filepath,
-										   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+										   stdout=subprocess.PIPE,
+										   stderr=subprocess.STDOUT,
+										   env={"PATH" : path})
 		print(completed_process.stdout.decode())
 		completed_process.check_returncode()
 
@@ -185,6 +197,7 @@ def make_kamil_browser(
 	which_meta = "all",
 	cluster_column = "leiden_labels",
 	embedding = "umap", 
+	var_info = "de_res",
 	which_vars = ["auroc", "mean_logExpr", "mean_logExpr_other", "log_fold_change", "percentage", "percentage_other"],
 	de_selection_var = "auroc",
 	de_selection_cutoff = 0.5,
@@ -194,7 +207,7 @@ def make_kamil_browser(
 
 	### CHECK THE DATA ###
 	# Make sure all of the vars are in the anndata
-	all_vars = set([name.split(":")[0] for name in adata.varm["de_res"].dtype.names])
+	all_vars = set([name.split(":")[0] for name in adata.varm[var_info].dtype.names])
 	if not all(var in all_vars for var in which_vars) :
 		raise ValueError("Not all DEG parameters are in data")
 
@@ -214,7 +227,7 @@ def make_kamil_browser(
 
 	# Lets make the cell browser files
 	_make_cell_browser_files(adata, output_filepath = browser_filepath, which_meta = which_meta, 
-		cluster_column = cluster_column, embedding = embedding, which_vars = which_vars,
+		cluster_column = cluster_column, embedding = embedding, var_info = var_info, which_vars = which_vars,
 		de_selection_var = de_selection_var, de_selection_cutoff = de_selection_cutoff)
 
 	# Lets make the conf file
