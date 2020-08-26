@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import os
 
 def _make_cell_browser_files(
@@ -10,7 +11,12 @@ def _make_cell_browser_files(
 	var_info = "de_res",
 	which_vars = ["auroc", "mean_logExpr", "mean_logExpr_other", "log_fold_change", "percentage", "percentage_other"],
 	de_selection_var = "auroc",
-	de_selection_cutoff = 0.5) :
+	de_selection_cutoff = 0.5,
+	de_selection_top_num = None,
+	de_selection_bottom_num = None,
+	pval_precision = 3,
+	round_float = 2
+) :
 	
 	# Make the metadata
 	if which_meta == "all" :
@@ -42,23 +48,9 @@ def _make_cell_browser_files(
 	embedding_file = embedding_file[["cellName", "x", "y"]]
 
 	# Now the DE file
-	de_df = pd.DataFrame(columns = which_vars + ["gene","cluster"])
-
-	for clust in set(adata.obs[cluster_column]) :
-		df_dict = {}
-
-		for var in which_vars :
-			df_dict[var] = adata.varm[var_info]["{var}:{clust}".format(var = var, clust = clust)]
-
-		df = pd.DataFrame(df_dict)
-		df["gene"] = adata.var_names
-		df["cluster"] = clust
-		df = df[df[de_selection_var] > de_selection_cutoff]
-		de_df = de_df.append(df, ignore_index = True)
-	
-	# Adjust so cluster is first column
-	# Adjust the columns so genes is first
-	de_df = de_df[["cluster", "gene"] + which_vars]
+	de_df = _filter_de(adata, which_vars, cluster_column, de_selection_var,
+					   de_selection_cutoff, de_selection_top_num, de_selection_bottom_num,
+					   pval_precision, round_float)
 
 	if not os.path.exists(output_filepath) :
 		os.mkdir(output_filepath)
@@ -189,6 +181,51 @@ def _swap_files(browser_filepath) :
 	shutil.copy2(os.path.join(os.path.dirname(__file__), "db", "cell_browser", "index.html"), os.path.join(browser_filepath))
 
 
+def _filter_de(
+		adata,
+		which_vars,
+		cluster_column,
+		de_selection_var,
+		de_selection_cutoff,
+		de_selection_top_num,
+		de_selection_bottom_num,
+		pval_precision,
+		round_float
+):
+	# get de columns and filter de_selection_var with de_selection_cutoff
+	de_df = pd.DataFrame(columns=list(which_vars) + ["gene", "cluster"])
+
+	for clust in set(adata.obs[cluster_column]):
+		df_dict = {}
+
+		for var in which_vars:
+			df_dict[var] = adata.varm["de_res"]["{var}:{clust}".format(var=var, clust=clust)]
+
+		df = pd.DataFrame(df_dict)
+		df["gene"] = adata.var_names
+		df["cluster"] = clust
+		if de_selection_top_num:
+			df = df.sort_values(de_selection_var, ascending=False)[:1000]
+		elif de_selection_bottom_num:
+			df = df.sort_values(de_selection_var, ascending=True)[:1000]
+		else:
+			df = df[df[de_selection_var] > de_selection_cutoff]
+		de_df = de_df.append(df, ignore_index=True)
+
+	# Adjust so cluster and gene are the first two columns
+	de_df = de_df[["cluster", "gene"] + list(which_vars)]
+
+	# make p values display in scientific notation and round other float columns
+	pval = 'pseudobulk_p_val'
+	for col in which_vars:
+		if col != pval:
+			de_df[col] = de_df[col].round(round_float)
+		elif col == pval:
+			de_df[pval] = [np.format_float_scientific(num, precision=pval_precision) for num in de_df[pval]]
+
+	return de_df
+
+
 # A function that creates Kamil's cellbrowser
 def make_kamil_browser(
 	adata,
@@ -196,12 +233,16 @@ def make_kamil_browser(
 	browser_name = "cell_browser",
 	which_meta = "all",
 	cluster_column = "leiden_labels",
-	embedding = "umap", 
+	embedding = "umap",
 	var_info = "de_res",
 	which_vars = ["auroc", "mean_logExpr", "mean_logExpr_other", "log_fold_change", "percentage", "percentage_other"],
 	de_selection_var = "auroc",
 	de_selection_cutoff = 0.5,
+	de_selection_top_num = None,
+	de_selection_bottom_num = None,
 	run_browser = True,
+	pval_precision = 3,
+	round_float = 2,
 	**kwargs # To be passed to the _make_conf function
 	) :
 
@@ -224,11 +265,17 @@ def make_kamil_browser(
 		if not set(which_meta).issubset(adata.obs.columns) :
 			raise ValueError("not all metadata in obs")
 
+	# make sure de_selection top, bottom, cutoff are correctly set
+	selection_truth_vals = [not de_selection_bottom_num, not de_selection_top_num, not de_selection_cutoff]
+	assert sum(selection_truth_vals) <= 1, 'Must pick zero or one of three selection variables to use'
+
 
 	# Lets make the cell browser files
-	_make_cell_browser_files(adata, output_filepath = browser_filepath, which_meta = which_meta, 
-		cluster_column = cluster_column, embedding = embedding, var_info = var_info, which_vars = which_vars,
-		de_selection_var = de_selection_var, de_selection_cutoff = de_selection_cutoff)
+	_make_cell_browser_files(adata, output_filepath = browser_filepath, which_meta = which_meta,
+		cluster_column = cluster_column, embedding = embedding, which_vars = which_vars,
+		de_selection_var = de_selection_var, de_selection_cutoff = de_selection_cutoff,
+		de_selection_top_num=de_selection_top_num, de_selection_bottom_num=de_selection_bottom_num,
+		pval_precision = pval_precision, round_float = round_float)
 
 	# Lets make the conf file
 	_make_conf(output_filepath = browser_filepath, name = browser_name, **kwargs)
