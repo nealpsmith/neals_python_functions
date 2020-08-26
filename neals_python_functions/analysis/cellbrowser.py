@@ -29,6 +29,12 @@ def _make_cell_browser_files(
 	# Need to make one of the columns the "cluster" columns
 	cell_meta = cell_meta.rename(columns = {cluster_column : "cluster"})
 
+	# make cell_name column and make it first
+	cell_meta['cellName'] = cell_meta.index
+	cols = cell_meta.columns.tolist()
+	cols = cols[-1:] + cols[:-1]
+	cell_meta = cell_meta[cols]
+
 	# Now lets make the umap file
 	embedding_file = pd.DataFrame(adata.obsm["X_{embedding}".format(embedding = embedding)], columns = ["x", "y"])
 	embedding_file["cellName"] = adata.obs_names
@@ -58,7 +64,7 @@ def _make_cell_browser_files(
 	
 	# Write out the files to the path
 	expr_mtx.to_csv(os.path.join(output_filepath, "expr_mtx.csv.gz"), compression= "gzip", index = False)
-	cell_meta.to_csv(os.path.join(output_filepath, "meta_data.csv"))
+	cell_meta.to_csv(os.path.join(output_filepath, "meta_data.csv"), index=False)
 	embedding_file.to_csv(os.path.join(output_filepath, "embedding.csv"), index = False)
 	de_df.to_csv(os.path.join(output_filepath, "de_data.csv"), index = False)
 
@@ -141,14 +147,22 @@ def _make_conf(
 def _make_browser(data_filepath, browser_filepath, run = True) :
 	import subprocess
 	# subprocess.call(["cd", data_filepath])
-	subprocess.call(["cbBuild", "-o", browser_filepath], cwd = data_filepath)
+	print('Running cbBuild')
+	completed_process = subprocess.run(["cbBuild", "-o", browser_filepath], cwd=data_filepath,
+									   stdout=subprocess.PIPE,
+									   stderr=subprocess.STDOUT)
+	print(completed_process.stdout.decode())
+	completed_process.check_returncode()
 
 	# Change the files
 	_swap_files(browser_filepath)
 
 	if run :
 		# Re-run it
-		subprocess.call(["cbBuild", "-o", browser_filepath, "-p", "8888"], cwd = data_filepath)
+		completed_process = subprocess.run(["cbBuild", "-o", browser_filepath, "-p", "1234"], cwd = data_filepath,
+										   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+		print(completed_process.stdout.decode())
+		completed_process.check_returncode()
 
 def _swap_files(browser_filepath) :
 	import shutil

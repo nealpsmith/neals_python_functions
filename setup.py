@@ -29,6 +29,8 @@ setup(
 
     install_requires=["numpy"],
 
+    include_package_data=True,
+
     keywords='',
 
     packages=find_packages(),
