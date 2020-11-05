@@ -40,6 +40,53 @@ def collect_samples(n_cells, resamp_size, indx_array, adata, resolution, rep):
     new_class = samp_data.obs["leiden_labels"]
     return adjusted_rand_score(true_class, new_class)
 
+def rand_index_plot_large(
+        file,
+        rep='pca',
+        resamp_perc=0.9,
+        resolutions=(0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9),
+        max_workers=25
+    ):
+    adata = pg.read_input(file)
+    rand_indx_dict = {}
+    indx_array = adata.obs.index.values
+    n_cells = range(adata.shape[0])
+    resamp_size = round(adata.shape[0] * resamp_perc)
+
+    for resolution in resolutions:
+        # drop leiden labels if they exist else do nothing
+        try:
+            adata.obs = adata.obs.drop("leiden_labels", axis=1)
+        except KeyError as e:
+            pass
+
+        try:
+            pg.leiden(adata, resolution=resolution, rep=rep)
+        except ValueError as e:
+            pg.neighbors(adata, rep=rep)
+            pg.leiden(adata, resolution=resolution, rep=rep)
+
+        data_labels = adata.obs['leiden_labels']
+
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(collect_samples_large, n_cells, resamp_size, indx_array,
+                                       file, data_labels, resolution, rep) for i in range(25)]
+            rand_list = [f.result() for f in futures]
+
+        rand_indx_dict[str(resolution)] = rand_list
+        print("Finished {res}".format(res=resolution))
+    return rand_indx_dict
+
+def collect_samples_large(n_cells, resamp_size, indx_array, file, data_labels, resolution, rep):
+    adata = pg.read_input(file)
+    samp_indx = indx_array[random.sample(n_cells, resamp_size)]
+    samp_data = adata[samp_indx]
+
+    true_class = data_labels[samp_indx]
+
+    pg.leiden(samp_data, resolution=resolution, rep=rep)
+    new_class = samp_data.obs["leiden_labels"]
+    return adjusted_rand_score(true_class, new_class)
 
 def myeloid_scores(data) :
     from . import gene_sets
