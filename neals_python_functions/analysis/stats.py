@@ -1,92 +1,99 @@
-import pegasus as pg
 import numpy as np
 import pandas as pd
 import concurrent.futures
 from sklearn.metrics.cluster import adjusted_rand_score
 import random
+import time
+import logging
+logger = logging.getLogger(__name__)
+import leidenalg
+import concurrent.futures
+import os
+from pegasus.tools import construct_graph
+from scipy.sparse import csr_matrix
 
 
 # Use Rand index to determine leiden resolution to use
-def rand_index_plot(adata, rep = "pca", resamp_perc = 0.9, resolutions = (0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9)) :
-    # Copy the anndata object to not write any leiden information to original data
-    adata = adata.copy()
-    rand_indx_dict = {}
-    indx_array = adata.obs.index.values
-    n_cells = range(adata.shape[0])
-    resamp_size = round(adata.shape[0] * resamp_perc)
-    for resolution in resolutions :
-        try :
-            adata.obs = adata.obs.drop("leiden_labels", axis = 1)
-        except ValueError as e:
-            pass
-        pg.leiden(adata, resolution=resolution, rep=rep)
-
-        with concurrent.futures.ProcessPoolExecutor(max_workers=24) as executor:
-            futures = [executor.submit(collect_samples, n_cells, resamp_size, indx_array, adata, resolution, rep) for i in range(25)]
-            rand_list = [f.result() for f in futures]
-
-        rand_indx_dict[str(resolution)] = rand_list
-        print("Finished {res}".format(res=resolution))
-    return rand_indx_dict
-
-
-def collect_samples(n_cells, resamp_size, indx_array, adata, resolution, rep):
-    samp_indx = indx_array[random.sample(n_cells, resamp_size)]
-    samp_data = adata[samp_indx]
-
-    true_class = samp_data.obs["leiden_labels"]
-
-    pg.leiden(samp_data, resolution=resolution, rep=rep)
-    new_class = samp_data.obs["leiden_labels"]
-    return adjusted_rand_score(true_class, new_class)
-
-def rand_index_plot_large(
-        file,
-        rep='pca',
+def rand_index_plot(
+        W,  # adata.uns['W_' + rep] or adata.uns['neighbors']
         resamp_perc=0.9,
         resolutions=(0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9),
-        max_workers=25
+        max_workers=25,
+        n_samples=25,
+        random_state=0
     ):
-    adata = pg.read_input(file)
+    assert isinstance(W, csr_matrix)
     rand_indx_dict = {}
-    indx_array = adata.obs.index.values
-    n_cells = range(adata.shape[0])
-    resamp_size = round(adata.shape[0] * resamp_perc)
+    n_cells = W.shape[0]
+    resamp_size = round(n_cells * resamp_perc)
 
     for resolution in resolutions:
-        # drop leiden labels if they exist else do nothing
-        try:
-            adata.obs = adata.obs.drop("leiden_labels", axis=1)
-        except KeyError as e:
-            pass
 
-        try:
-            pg.leiden(adata, resolution=resolution, rep=rep)
-        except ValueError as e:
-            pg.neighbors(adata, rep=rep)
-            pg.leiden(adata, resolution=resolution, rep=rep)
-
-        data_labels = adata.obs['leiden_labels']
+        true_class = leiden(W, resolution, random_state)
 
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(collect_samples_large, n_cells, resamp_size, indx_array,
-                                       file, data_labels, resolution, rep) for i in range(25)]
+            futures = [executor.submit(_collect_samples, W, resolution, n_cells, resamp_size, true_class, random_state)
+                       for i in range(n_samples)]
             rand_list = [f.result() for f in futures]
 
         rand_indx_dict[str(resolution)] = rand_list
         print("Finished {res}".format(res=resolution))
     return rand_indx_dict
 
-def collect_samples_large(n_cells, resamp_size, indx_array, file, data_labels, resolution, rep):
-    adata = pg.read_input(file)
-    samp_indx = indx_array[random.sample(n_cells, resamp_size)]
-    samp_data = adata[samp_indx]
 
-    true_class = data_labels[samp_indx]
+def leiden(W, resolution, random_state=0):
 
-    pg.leiden(samp_data, resolution=resolution, rep=rep)
-    new_class = samp_data.obs["leiden_labels"]
+    start = time.perf_counter()
+
+    G = construct_graph(W)
+    partition_type = leidenalg.RBConfigurationVertexPartition
+    partition = leidenalg.find_partition(
+        G,
+        partition_type,
+        seed=random_state,
+        weights="weight",
+        resolution_parameter=resolution,
+        n_iterations=-1,
+    )
+
+    labels = np.array([str(x + 1) for x in partition.membership])
+
+    end = time.perf_counter()
+    n_clusters = len(set(labels))
+    logger.info(f"Finished leiden clustering for res = {resolution}. Get {n_clusters} clusters. "
+                f"Time spent = {end-start:.2f}s.")
+
+    return pd.Series(labels)
+
+
+
+def _collect_samples(W, resolution, n_cells, resamp_size, true_class, random_state=0):
+    samp_indx = random.sample(range(n_cells), resamp_size)
+    samp_data = W[samp_indx][:, samp_indx]
+    true_class = true_class[samp_indx]
+    new_class = leiden(samp_data, resolution, random_state)
     return adjusted_rand_score(true_class, new_class)
+
+
+def plot_boxplot(dct, figdir, save_name=None):
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+
+    col1 = []
+    col2 = []
+    for k in dct.keys():
+        for i in dct[k]:
+            col1.append(k)
+            col2.append(i)
+
+    df = pd.DataFrame({'resolution': col1, 'rand_index': col2})
+
+    sns.boxplot(x='resolution', y='rand_index', data=df)
+    plt.axhline(y=0.9, color='r', lw=1.0, linestyle='--')
+    plt.xlabel('resolution')
+    plt.ylabel('rand_index score')
+    plt.savefig(os.path.join(figdir, save_name + '_resolution_boxplot.png'))
+
 
 def myeloid_scores(data) :
     from . import gene_sets
