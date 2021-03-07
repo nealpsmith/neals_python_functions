@@ -3,36 +3,25 @@ import numpy as np
 import os
 
 
-def _make_cell_browser_files(
-        adata,
-        output_filepath,
-        which_meta="all",
-        cluster_column="leiden_labels",
-        embedding="umap",
-        var_info="de_res",
-        which_vars=('auroc', 'log2Mean', 'log2Mean_other', 'log2FC', 'percentage', 'percentage_other',
-                    'percentage_fold_change', 'mwu_U', 'mwu_pval', 'mwu_qval'),
-        de_selection_var="auroc",
-        de_selection_cutoff=0.5,
-        de_selection_top_num=None,
-        de_selection_bottom_num=None,
-        pval_precision=3,
-        round_float=2
-):
-    # Make the metadata
-    if which_meta == "all":
-        cell_meta = adata.obs
-    else:
-        cell_meta = adata.obs[which_meta]
-
+def _make_expr_mtx(adata, output_filepath):
     # Make the expression matrix
-    expr_mtx = pd.DataFrame(adata.X.toarray(), index=adata.obs_names).T
+    expr_mtx = pd.DataFrame(adata.X.todense(), index=adata.obs_names).T
     expr_mtx["gene"] = adata.var_names
 
     # Adjust the columns so genes is first
     cols = expr_mtx.columns.tolist()
     cols = cols[-1:] + cols[:-1]
     expr_mtx = expr_mtx[cols]
+
+    expr_mtx.to_csv(os.path.join(output_filepath, "exprMatrix.tsv.gz"), compression="gzip", index=False, sep='\t')
+
+
+def _make_cell_meta(adata, output_filepath, cluster_column='leiden_labels', which_meta='all'):
+    # Make the metadata
+    if which_meta == "all":
+        cell_meta = adata.obs
+    else:
+        cell_meta = adata.obs[which_meta]
 
     # Need to make one of the columns the "cluster" columns
     cell_meta = cell_meta.rename(columns={cluster_column: "cluster"})
@@ -43,23 +32,63 @@ def _make_cell_browser_files(
     cols = cols[-1:] + cols[:-1]
     cell_meta = cell_meta[cols]
 
-    # Now lets make the umap file
-    embedding_file = pd.DataFrame(adata.obsm["X_{embedding}".format(embedding=embedding)], columns=["x", "y"])
+    cell_meta.to_csv(os.path.join(output_filepath, "meta_data.csv"), index=False)
+
+
+def _make_embedding(adata, output_filepath, embedding='umap'):
+    # Now lets make the embedding file
+    embedding_file = pd.DataFrame(adata.obsm[f"X_{embedding}"], columns=["x", "y"])
     embedding_file["cellName"] = adata.obs_names
     embedding_file = embedding_file[["cellName", "x", "y"]]
-
-    # Now the DE file
-    de_df = _filter_de(adata, which_vars, var_info, cluster_column, de_selection_var,
-                       de_selection_cutoff, de_selection_top_num, de_selection_bottom_num,
-                       pval_precision, round_float)
-
-    if not os.path.exists(output_filepath):
-        os.mkdir(output_filepath)
-
-    # Write out the files to the path
-    expr_mtx.to_csv(os.path.join(output_filepath, "expr_mtx.csv.gz"), compression="gzip", index=False)
-    cell_meta.to_csv(os.path.join(output_filepath, "meta_data.csv"), index=False)
     embedding_file.to_csv(os.path.join(output_filepath, "embedding.csv"), index=False)
+
+
+def _make_de_data(
+        adata,
+        output_filepath,
+        which_vars=('auroc', 'log2Mean', 'log2Mean_other', 'log2FC', 'percentage', 'percentage_other',
+                  'percentage_fold_change', 'mwu_U', 'mwu_pval', 'mwu_qval'),
+        var_info="de_res",
+        cluster_column="leiden_labels",
+        de_selection_var="auroc",
+        de_selection_cutoff=0.5,
+        de_selection_top_num=None,
+        de_selection_bottom_num=None,
+        pval_precision=3,
+        round_float=2
+):
+
+    # get de columns and filter de_selection_var with de_selection_cutoff
+    de_df = pd.DataFrame(columns=list(which_vars) + ["gene", "cluster"])
+
+    for clust in set(adata.obs[cluster_column]):
+        df_dict = {}
+
+        for var in which_vars:
+            df_dict[var] = adata.varm[var_info]["{clust}:{var}".format(var=var, clust=clust)]
+
+        df = pd.DataFrame(df_dict)
+        df["gene"] = adata.var_names
+        df["cluster"] = clust
+        if de_selection_top_num:
+            df = df.sort_values(de_selection_var, ascending=False)[:1000]
+        elif de_selection_bottom_num:
+            df = df.sort_values(de_selection_var, ascending=True)[:1000]
+        else:
+            df = df[df[de_selection_var] > de_selection_cutoff]
+        de_df = de_df.append(df, ignore_index=True)
+
+    # Adjust so cluster and gene are the first two columns
+    de_df = de_df[["cluster", "gene"] + list(which_vars)]
+
+    # make p values display in scientific notation and round other float columns
+    pval = 'pseudobulk_p_val'
+    for col in which_vars:
+        if col != pval:
+            de_df[col] = de_df[col].round(round_float)
+        elif col == pval:
+            de_df[pval] = [np.format_float_scientific(num, precision=pval_precision) for num in de_df[pval]]
+
     de_df.to_csv(os.path.join(output_filepath, "de_data.csv"), index=False)
 
 
@@ -67,12 +96,12 @@ def _make_conf(
         output_filepath,
         name,
         priority=10,
-        tags=("10X"),
+        tags="10X",
         shortLabel='cell browser',
-        expr_mtx="expr_mtx.csv.gz",
+        expr_mtx="exprMatrix.tsv.gz",
         geneIdType="auto",
         meta="meta_data.csv",
-        enumFields=("cluster"),
+        enumFields="cluster",
         coord_file="embedding.csv",
         coord_label="embedding",
         clusterField="cluster",
@@ -94,11 +123,12 @@ def _make_conf(
         "file": '{marker_file}'.format(marker_file=marker_file),
         "shortLabel": marker_label
     }
+    tags = [tags]
 
     with open(os.path.join(output_filepath, "cellbrowser.conf"), "w") as f:
         f.write(
             f"name='{name}'\npriority={priority}\ntags={tags}\nshortLabel='{shortLabel}'\nexprMatrix='{expr_mtx}'\n"
-            f"geneIdType='{geneIdType}'\nmeta='{meta}'\nenumFields={enumFields}\ncoords=[\n\t{coord_dict}\n]\n"
+            f"geneIdType='{geneIdType}'\nmeta='{meta}'\nenumFields='{enumFields}'\ncoords=[\n\t{coord_dict}\n]\n"
             f"clusterField='{clusterField}'\nlabelField='{labelField}'\nmarkers=[\n\t{marker_dict}\n]\n"
             f"showLabels={showLabels}\nradius={radius}\nalpha={alpha}\nunit='{unit}'\nmatrixType='{matrixType}'\n"
         )
@@ -161,52 +191,6 @@ def _swap_files(browser_filepath):
                  os.path.join(browser_filepath))
 
 
-def _filter_de(
-        adata,
-        which_vars,
-        var_info,
-        cluster_column,
-        de_selection_var,
-        de_selection_cutoff,
-        de_selection_top_num,
-        de_selection_bottom_num,
-        pval_precision,
-        round_float
-):
-    # get de columns and filter de_selection_var with de_selection_cutoff
-    de_df = pd.DataFrame(columns=list(which_vars) + ["gene", "cluster"])
-
-    for clust in set(adata.obs[cluster_column]):
-        df_dict = {}
-
-        for var in which_vars:
-            df_dict[var] = adata.varm[var_info]["{clust}:{var}".format(var=var, clust=clust)]
-
-        df = pd.DataFrame(df_dict)
-        df["gene"] = adata.var_names
-        df["cluster"] = clust
-        if de_selection_top_num:
-            df = df.sort_values(de_selection_var, ascending=False)[:1000]
-        elif de_selection_bottom_num:
-            df = df.sort_values(de_selection_var, ascending=True)[:1000]
-        else:
-            df = df[df[de_selection_var] > de_selection_cutoff]
-        de_df = de_df.append(df, ignore_index=True)
-
-    # Adjust so cluster and gene are the first two columns
-    de_df = de_df[["cluster", "gene"] + list(which_vars)]
-
-    # make p values display in scientific notation and round other float columns
-    pval = 'pseudobulk_p_val'
-    for col in which_vars:
-        if col != pval:
-            de_df[col] = de_df[col].round(round_float)
-        elif col == pval:
-            de_df[pval] = [np.format_float_scientific(num, precision=pval_precision) for num in de_df[pval]]
-
-    return de_df
-
-
 # A function that creates Kamil's cellbrowser
 def make_kamil_browser(adata,
                        browser_filepath,
@@ -238,8 +222,8 @@ def prepare_cb_files(
         cluster_column="leiden_labels",
         embedding="umap",
         var_info="de_res",
-        which_vars=('auroc', 'log2Mean', 'log2Mean_other', 'log2FC', 'percentage', 'percentage_other', 'percentage_fold_change',
-                    'mwu_U', 'mwu_pval', 'mwu_qval'),
+        which_vars=('auroc', 'log2Mean', 'log2Mean_other', 'log2FC', 'percentage', 'percentage_other',
+                    'percentage_fold_change', 'mwu_U', 'mwu_pval', 'mwu_qval'),
         de_selection_var="auroc",
         de_selection_cutoff=0.5,
         de_selection_top_num=None,
@@ -254,7 +238,7 @@ def prepare_cb_files(
         print('If the following output is a list of cluster identifiers, you may need to update Pegasus to 1.0.0 or '
               'higher and rerun de_analysis.')
         print(all_vars)
-        raise ValueError("Not all DEG parameters are in data")
+        raise ValueError(f"Not all {var_info} parameters are in data")
 
     # Make sure embedding exists
     if not "X_{embedding}".format(embedding=embedding) in adata.obsm:
@@ -273,12 +257,17 @@ def prepare_cb_files(
     selection_truth_vals = [not de_selection_bottom_num, not de_selection_top_num, not de_selection_cutoff]
     assert sum(selection_truth_vals) <= 1, 'Must pick zero or one of three selection variables to use'
 
+    # create output directory
+    os.makedirs(browser_filepath, exist_ok=True)
+
     # Lets make the cell browser files
-    _make_cell_browser_files(adata, output_filepath=browser_filepath, which_meta=which_meta,
-                             cluster_column=cluster_column, embedding=embedding, which_vars=which_vars,
-                             de_selection_var=de_selection_var, de_selection_cutoff=de_selection_cutoff,
-                             de_selection_top_num=de_selection_top_num, de_selection_bottom_num=de_selection_bottom_num,
-                             pval_precision=pval_precision, round_float=round_float)
+    _make_expr_mtx(adata, browser_filepath)
+    _make_cell_meta(adata, browser_filepath, cluster_column, which_meta)
+    _make_embedding(adata, browser_filepath, embedding)
+    _make_de_data(adata, browser_filepath, which_vars, var_info, cluster_column,
+                  de_selection_var, de_selection_cutoff, de_selection_top_num, de_selection_bottom_num,
+                  pval_precision, round_float)
+
 
 
 def run_cbBuild(browser_filepath,
