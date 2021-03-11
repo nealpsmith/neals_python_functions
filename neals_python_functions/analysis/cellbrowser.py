@@ -5,7 +5,7 @@ import os
 
 def _make_expr_mtx(adata, output_filepath):
     # Make the expression matrix
-    expr_mtx = pd.DataFrame(adata.X.todense(), index=adata.obs_names).T
+    expr_mtx = pd.DataFrame.sparse.from_spmatrix(adata.X.T, columns=adata.obs_names)
     expr_mtx["gene"] = adata.var_names
 
     # Adjust the columns so genes is first
