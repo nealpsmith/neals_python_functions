@@ -288,8 +288,8 @@ def check_args(
             raise ValueError("not all metadata in obs")
 
     # make sure de_selection top, bottom, cutoff are correctly set
-    selection_truth_vals = [not de_selection_bottom_num, not de_selection_top_num, not de_selection_cutoff]
-    assert sum(selection_truth_vals) <= 1, 'Must pick zero or one of three selection variables to use'
+    selection_truth_vals = [de_selection_bottom_num, de_selection_top_num, de_selection_cutoff]
+    assert sum(map(bool, selection_truth_vals)) <= 1, 'Must pick zero or one of three selection variables to use'
 
 
 def prepare_cb_files(
