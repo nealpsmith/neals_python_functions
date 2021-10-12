@@ -5,6 +5,7 @@ from tqdm import tqdm
 import warnings
 import scanpy as sc
 from typing import Iterable, Union
+import subprocess
 
 
 def _make_expr_mtx(
@@ -80,17 +81,16 @@ def _make_de_data(
         adata: sc.AnnData,
         output_filepath: str,
         which_vars: Iterable[str] = ('auroc', 'log2Mean', 'log2Mean_other', 'log2FC', 'percentage', 'percentage_other',
-                  'percentage_fold_change', 'mwu_U', 'mwu_pval', 'mwu_qval'),
-        var_info: str ="de_res",
+                                     'percentage_fold_change', 'mwu_U', 'mwu_pval', 'mwu_qval'),
+        var_info: str = "de_res",
         cluster_column: str = "leiden_labels",
         de_selection_var: str = "auroc",
-        de_selection_cutoff: Union[int, float] = 0.5,
-        de_selection_top_num: int = None,
+        de_selection_cutoff: Union[int, float] = None,
+        de_selection_top_num: int = 1000,
         de_selection_bottom_num: int = None,
         pval_precision: int = 3,
         round_float: int = 2
 ):
-
     # get de columns and filter de_selection_var with de_selection_cutoff
     de_df = pd.DataFrame(columns=list(which_vars) + ["gene", "cluster"])
 
@@ -174,9 +174,10 @@ def _make_conf(
 def _make_browser(
         data_filepath: str,
         browser_filepath: str,
-        run: bool = True
+        health_field: str,
+        donor_field: str,
+        run: bool = False
 ):
-    import subprocess
     import sys
 
     # Need to add path environment variable for subprocess to work
@@ -197,6 +198,14 @@ def _make_browser(
     # Change the files
     _swap_files(browser_filepath)
 
+    # change health and donor variables
+    with open(os.path.join(browser_filepath, 'js', 'cellGuide.js'), 'r') as f:
+        lines = f.readlines()
+    lines[57] = f'var g_healthField = \"{health_field}\"\n'
+    lines[58] = f'var g_donorField = \"{donor_field}\"\n'
+    with open(os.path.join(browser_filepath, 'js', 'cellGuide.js'), 'w') as f:
+        f.writelines(lines)
+
     if run:
         # Re-run it
         completed_process = subprocess.run(["cbBuild", "-o", browser_filepath, "-p", "1234"], cwd=data_filepath,
@@ -210,15 +219,18 @@ def _make_browser(
 def _swap_files(browser_filepath: str):
     import shutil
     # Lets delete the original files and replace with new ones
+    subprocess.run('curl -s https://codeload.github.com/slowkow/cellguide/tar.gz/master | tar xz',
+                   shell=True, check=True, cwd=browser_filepath)
     for direc in ["css", "ext", "js"]:
         shutil.rmtree(os.path.join(browser_filepath, direc))
 
-        shutil.copytree(os.path.join(os.path.dirname(__file__), "db", "cell_browser", direc),
+        shutil.copytree(os.path.join(browser_filepath, 'cellguide-master', 'www', direc),
                         os.path.join(browser_filepath, direc))
 
     os.remove(os.path.join(browser_filepath, "index.html"))
-    shutil.copy2(os.path.join(os.path.dirname(__file__), "db", "cell_browser", "index.html"),
+    shutil.copy2(os.path.join(browser_filepath, 'cellguide-master', 'www', "index.html"),
                  os.path.join(browser_filepath))
+    shutil.rmtree(os.path.join(browser_filepath, 'cellguide-master'))
 
 
 # A function that creates Kamil's cellbrowser
@@ -229,12 +241,15 @@ def make_kamil_browser(adata: sc.AnnData,
                        cluster_column: str = "leiden_labels",
                        embedding: str = "umap",
                        var_info: str = "de_res",
-                       which_vars: Iterable[str] = ('auroc', 'log2Mean', 'log2Mean_other', 'log2FC', 'percentage', 'percentage_other',
-                                   'percentage_fold_change', 'mwu_U', 'mwu_pval', 'mwu_qval'),
+                       which_vars: Iterable[str] = (
+                               'auroc', 'log2Mean', 'log2Mean_other', 'log2FC', 'percentage', 'percentage_other',
+                               'percentage_fold_change', 'mwu_U', 'mwu_pval', 'mwu_qval'),
                        de_selection_var: str = "auroc",
-                       de_selection_cutoff: Union[int, float] = 0.5,
-                       de_selection_top_num: int = None,
+                       de_selection_cutoff: Union[int, float] = None,
+                       de_selection_top_num: int = 1000,
                        de_selection_bottom_num: int = None,
+                       health_field: str = "health",
+                       donor_field: str = "Channel",
                        run_browser: bool = False,
                        pval_precision: int = 3,
                        round_float: int = 2,
@@ -242,10 +257,10 @@ def make_kamil_browser(adata: sc.AnnData,
     prepare_cb_files(adata, browser_filepath, which_meta, cluster_column, embedding,
                      var_info, which_vars, de_selection_var, de_selection_cutoff, de_selection_top_num,
                      de_selection_bottom_num, pval_precision, round_float)
-    run_cbBuild(browser_filepath, browser_name, run_browser, **kwargs)
+    run_cbBuild(browser_filepath, browser_name, health_field, donor_field, run_browser, **kwargs)
 
 
-def check_args(
+def _check_args(
         adata: sc.AnnData,
         browser_filepath: str,
         which_meta: str or iter,
@@ -282,14 +297,18 @@ def check_args(
     if not cluster_column in adata.obs.columns:
         raise ValueError("{clustcol} is not in obs".format(clustcol=cluster_column))
 
-    # Lets make the metadata
+    # check metadata
     if not which_meta == "all":
         if not set(which_meta).issubset(adata.obs.columns):
             raise ValueError("not all metadata in obs")
 
+    # check ints
+    assert pval_precision > 0, "cannot have pval_precision <= 0"
+    assert round_float > 0, "cannot have round_float <= 0"
+
     # make sure de_selection top, bottom, cutoff are correctly set
     selection_truth_vals = [de_selection_bottom_num, de_selection_top_num, de_selection_cutoff]
-    assert sum(map(bool, selection_truth_vals)) <= 1, 'Must pick zero or one of three selection variables to use'
+    assert sum(map(bool, selection_truth_vals)) <= 1, 'Must pick zero or one of three de_selection variables to use'
 
 
 def prepare_cb_files(
@@ -300,17 +319,17 @@ def prepare_cb_files(
         embedding: str = "umap",
         var_info: str = "de_res",
         which_vars: Iterable[str] = ('auroc', 'log2Mean', 'log2Mean_other', 'log2FC', 'percentage', 'percentage_other',
-                    'percentage_fold_change', 'mwu_U', 'mwu_pval', 'mwu_qval'),
+                                     'percentage_fold_change', 'mwu_U', 'mwu_pval', 'mwu_qval'),
         de_selection_var: str = "auroc",
-        de_selection_cutoff: Union[int, float] = 0.5,
-        de_selection_top_num: int = None,
+        de_selection_cutoff: Union[int, float] = None,
+        de_selection_top_num: int = 1000,
         de_selection_bottom_num: int = None,
         pval_precision: int = 3,
         round_float: int = 2,
 ):
-    check_args(adata, browser_filepath, which_meta, cluster_column, embedding, var_info,
-               which_vars, de_selection_var, de_selection_cutoff, de_selection_top_num, de_selection_bottom_num,
-               pval_precision, round_float)
+    _check_args(adata, browser_filepath, which_meta, cluster_column, embedding, var_info,
+                which_vars, de_selection_var, de_selection_cutoff, de_selection_top_num, de_selection_bottom_num,
+                pval_precision, round_float)
 
     os.makedirs(browser_filepath, exist_ok=True)
 
@@ -325,6 +344,8 @@ def prepare_cb_files(
 
 def run_cbBuild(browser_filepath: str,
                 browser_name: str = "cell_browser",
+                health_field: str = "health",
+                donor_field: str = "Channel",
                 run_browser: bool = False,
                 **kwargs  # To be passed to the _make_conf function
                 ):
@@ -333,4 +354,4 @@ def run_cbBuild(browser_filepath: str,
 
     # Create the browser
     _make_browser(data_filepath=browser_filepath, browser_filepath=os.path.join(browser_filepath, "browser"),
-                  run=run_browser)
+                  health_field=health_field, donor_field=donor_field, run=run_browser)
